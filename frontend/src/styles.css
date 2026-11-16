@@ -122,6 +122,8 @@ code, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-size:
 .spin-slow .dial { animation: spin 14s linear infinite; }
 
 /* ---------- landing ---------- */
+.offline-banner { background: color-mix(in srgb, var(--bad) 14%, var(--panel)); border-bottom: 1px solid color-mix(in srgb, var(--bad) 40%, transparent); color: var(--text); padding: 10px 40px; font-size: 13px; }
+.offline-banner b { color: var(--bad); }
 .landing { min-height: 100%; display: flex; flex-direction: column; }
 .l-top { display: flex; align-items: center; justify-content: space-between; padding: 18px 40px; }
 .brand { display: flex; gap: 11px; align-items: center; cursor: pointer; }

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import agents, auth, config, db, evals, llm, meter, orchestrator
@@ -35,6 +35,14 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="ResearchX", lifespan=lifespan)
+log = logging.getLogger("researchx.api")
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception):
+    """Turn crashes into a readable JSON error for the UI (the full traceback goes to the server log)."""
+    log.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": f"Server error: {type(exc).__name__}: {exc}"})
 
 
 @app.get("/api/health")

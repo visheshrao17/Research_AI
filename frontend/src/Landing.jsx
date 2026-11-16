@@ -22,13 +22,18 @@ const METRICS = [
   ["Agent telemetry", "Calls, tokens, latency and model fallbacks for every agent."],
 ];
 
-export default function Landing({ onAuthed }) {
+export default function Landing({ onAuthed, offline }) {
   const [door, setDoor] = useState("reader");
   const [cfg, setCfg] = useState(null);
-  useEffect(() => { api.authConfig().then(setCfg).catch(() => setCfg({})); }, []);
+  useEffect(() => { api.authConfig().then(setCfg).catch(() => setCfg(null)); }, []);
 
   return (
     <div className="landing">
+      {offline && (
+        <div className="offline-banner" role="alert">
+          <b>Can't reach the backend.</b> {offline} <span className="muted">Retrying every few seconds…</span>
+        </div>
+      )}
       <header className="l-top">
         <div className="brand">
           <VaultMark size={36} />
@@ -72,7 +77,7 @@ export default function Landing({ onAuthed }) {
             </span>
             <span className="door-arrow">→</span>
           </button>
-          <AuthCard key={door} keeper={door === "keeper"} cfg={cfg} onAuthed={onAuthed} />
+          <AuthCard key={door} keeper={door === "keeper"} cfg={cfg} offline={!!offline} onAuthed={onAuthed} />
         </div>
       </section>
 
@@ -108,13 +113,15 @@ export default function Landing({ onAuthed }) {
   );
 }
 
-function AuthCard({ keeper, cfg, onAuthed }) {
+function AuthCard({ keeper, cfg, offline, onAuthed }) {
   const [mode, setMode] = useState("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const canSignup = !keeper && cfg?.signup_enabled;
+  // Sign-up and guest entry are always visible in the Reading Room; the server decides if they're open.
+  const signupClosed = cfg?.signup_enabled === false;
+  const guestClosed = cfg?.guest_enabled === false;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -143,7 +150,7 @@ function AuthCard({ keeper, cfg, onAuthed }) {
 
   return (
     <div className="card auth-card">
-      {canSignup ? (
+      {!keeper ? (
         <div className="auth-tabs">
           <button className={mode === "login" ? "on" : ""} onClick={() => setMode("login")}>Sign in</button>
           <button className={mode === "signup" ? "on" : ""} onClick={() => setMode("signup")}>Create account</button>
@@ -162,20 +169,23 @@ function AuthCard({ keeper, cfg, onAuthed }) {
           <input className="input" type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"}
                  value={password} onChange={(e) => setPassword(e.target.value)} minLength={mode === "signup" ? 8 : undefined} required />
         </label>
-        {mode === "signup" && cfg && (
+        {mode === "signup" && cfg && !signupClosed && (
           <div className="muted small">New accounts start with {fmt(cfg.default_user_tokens)} tokens.</div>
         )}
+        {mode === "signup" && signupClosed && (
+          <div className="error">Sign-ups are closed right now — ask the admin to create an account for you, or continue as a guest.</div>
+        )}
         {error && <div className="error">{error}</div>}
-        <button className="btn primary block" disabled={busy}>
+        <button className="btn primary block" disabled={busy || offline || (mode === "signup" && signupClosed)}>
           {busy ? "Opening…" : mode === "signup" ? "Create account & enter" : keeper ? "Enter the Keeper's Office" : "Enter the Reading Room"}
         </button>
       </form>
-      {!keeper && cfg?.guest_enabled && (
+      {!keeper && (
         <>
           <div className="or">or</div>
-          <button className="btn block guest-btn" onClick={guest} disabled={busy}>
-            <span>Continue as guest</span>
-            <span className="muted small mono">{fmt(cfg.guest_tokens)} tokens · {cfg.guest_hours}h</span>
+          <button className="btn block guest-btn" onClick={guest} disabled={busy || offline || guestClosed}>
+            <span>{guestClosed ? "Guest mode is turned off" : "Continue as guest"}</span>
+            {cfg && !guestClosed && <span className="muted small mono">{fmt(cfg.guest_tokens)} tokens · {cfg.guest_hours}h</span>}
           </button>
         </>
       )}

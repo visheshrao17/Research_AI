@@ -6,11 +6,20 @@ async function req(path, opts = {}) {
     init.body = JSON.stringify(opts.json);
     delete init.json;
   }
-  const res = await fetch(path, init);
+  let res;
+  try {
+    res = await fetch(path, init);
+  } catch {
+    const err = new Error("Backend not reachable — is the server running?");
+    err.status = 0;
+    throw err;
+  }
   if (res.status === 401 && !path.startsWith("/api/auth/")) window.dispatchEvent(new Event("rx:unauthorized"));
   if (!res.ok) {
-    let msg = res.statusText;
-    try { msg = (await res.json()).detail || msg; } catch {}
+    let msg = `${res.status} ${res.statusText}`;
+    try { msg = (await res.json()).detail || msg; } catch {
+      if (res.status >= 500) msg += " — check the backend terminal/log (backend/data/backend.log) for the traceback";
+    }
     const err = new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
     err.status = res.status;
     throw err;

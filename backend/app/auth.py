@@ -14,6 +14,7 @@ import hmac
 import logging
 import re
 import secrets
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
@@ -154,12 +155,21 @@ def ensure_admin() -> None:
     """Create the admin from ADMIN_USERNAME / ADMIN_PASSWORD on first start; adopt runs that predate auth."""
     admins = db.query("SELECT id FROM users WHERE role='admin'")
     if not admins:
-        pw = config.ADMIN_PASSWORD or secrets.token_urlsafe(12)
-        admin = create_user(config.ADMIN_USERNAME, pw, "admin", None)
-        if not config.ADMIN_PASSWORD:
-            log.warning("Created admin '%s' with generated password: %s  (set ADMIN_PASSWORD in backend/.env)",
-                        config.ADMIN_USERNAME, pw)
-        admins = [{"id": admin.id}]
+        existing = db.query("SELECT id FROM users WHERE lower(username)=lower(?)", (config.ADMIN_USERNAME,))
+        if existing:  # e.g. someone registered the admin name first: promote it rather than crash on startup
+            db.execute("UPDATE users SET role='admin', token_limit=NULL, disabled=0, expires_at=NULL WHERE id=?",
+                       (existing[0]["id"],))
+            log.warning("Promoted existing user '%s' to admin", config.ADMIN_USERNAME)
+        else:
+            pw = config.ADMIN_PASSWORD or secrets.token_urlsafe(12)
+            try:
+                create_user(config.ADMIN_USERNAME, pw, "admin", None)
+                if not config.ADMIN_PASSWORD:
+                    log.warning("Created admin '%s' with generated password: %s  (set ADMIN_PASSWORD in backend/.env)",
+                                config.ADMIN_USERNAME, pw)
+            except (HTTPException, sqlite3.IntegrityError):
+                pass  # another server process created it at the same moment
+        admins = db.query("SELECT id FROM users WHERE role='admin'")
     db.execute("UPDATE runs SET user_id=? WHERE user_id IS NULL", (admins[0]["id"],))
 
 

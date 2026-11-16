@@ -21,6 +21,7 @@ export default function App() {
   const [runs, setRuns] = useState([]);
   const [health, setHealth] = useState(null);
   const [flash, setFlash] = useState(0);
+  const [offline, setOffline] = useState(""); // set while the backend can't be reached
   const [toastNode, toast] = useToast();
 
   const go = useCallback((page, id) => {
@@ -35,10 +36,26 @@ export default function App() {
     const onUnauth = () => setMe(null);
     window.addEventListener("hashchange", onHash);
     window.addEventListener("rx:unauthorized", onUnauth);
-    api.me().then(setMe).catch(() => setMe(null));
-    api.health().then(setHealth).catch(() => setHealth({ ok: false }));
+    api.me().then(setMe).catch((err) => {
+      setMe(null);
+      if (err.status !== 401) setOffline(err.message || "Backend not reachable");
+    });
+    api.health().then(setHealth).catch((err) => { setHealth({ ok: false }); setOffline(err.message || "Backend not reachable"); });
     return () => { window.removeEventListener("hashchange", onHash); window.removeEventListener("rx:unauthorized", onUnauth); };
   }, []);
+
+  // While offline, poll the backend and reconnect by itself once it answers (e.g. it was still starting up).
+  useEffect(() => {
+    if (!offline) return;
+    const t = setInterval(() => {
+      api.health().then((h) => {
+        setHealth(h);
+        setOffline("");
+        api.me().then(setMe).catch(() => setMe(null));
+      }).catch((err) => setOffline(err.message || "Backend not reachable"));
+    }, 3000);
+    return () => clearInterval(t);
+  }, [offline]);
 
   const refreshMe = useCallback(() => api.me().then(setMe).catch(() => {}), []);
   const refreshRuns = useCallback(() => api.runs(me?.role === "admin").then(setRuns).catch(() => {}), [me?.role]);
@@ -57,7 +74,7 @@ export default function App() {
   }, []);
 
   if (me === undefined) return <div className="empty"><VaultMark size={56} className="spin-slow" /></div>;
-  if (!me) return <Landing onAuthed={(user, page) => { setMe(user); go(page); }} />;
+  if (!me) return <Landing key={offline ? "offline" : "online"} offline={offline} onAuthed={(user, page) => { setMe(user); go(page); }} />;
 
   const logout = async () => { await api.logout().catch(() => {}); setMe(null); setRuns([]); go("home"); };
   const nav = [

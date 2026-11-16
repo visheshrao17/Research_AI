@@ -29,8 +29,18 @@ question → │ Planner  │ → │ Researcher│ → │ Analyst  │ → │
 open http://localhost:5173
 ```
 
-Sign in through **the Keeper's Office** with `ADMIN_USERNAME` / `ADMIN_PASSWORD` from `backend/.env`
-(if `ADMIN_PASSWORD` is blank on first start, a password is generated and printed in the backend log).
+Requirements: Python 3.11+ and Node 18+. `start.sh` waits until the backend answers before starting the UI;
+the very first start takes 30–60 s while Python compiles LangChain. Ports are configurable:
+`BACKEND_PORT=8001 FRONTEND_PORT=5174 ./start.sh`.
+
+- **Admin:** open the Keeper's Office and sign in with `ADMIN_USERNAME` / `ADMIN_PASSWORD` from `backend/.env`
+  (if `ADMIN_PASSWORD` is blank on first start, a password is generated and printed by `start.sh`).
+- **Researchers:** open the Reading Room → **Create account** (username 3–32 chars, password 8+), or ask the admin
+  to create an account in the Keeper's Office.
+- **Guests:** Reading Room → **Continue as guest** (no password).
+
+New to the code? See **[docs/CODEBASE.md](docs/CODEBASE.md)** (every file and function) and
+**[docs/API.md](docs/API.md)** (every endpoint).
 
 Free keys: **Groq** → https://console.groq.com/keys · **Gemini** → https://aistudio.google.com/apikey ·
 (optional) **OpenRouter** → https://openrouter.ai/keys · (optional) **Tavily** search → https://tavily.com
@@ -103,6 +113,18 @@ elapsed time, the model's output **as it is generated**, tokens spent on the run
 logged with model, tokens in/out and latency. **Ask the vault** answers follow-up questions about a finished run
 from its indexed sources (hybrid RAG, cited), without new web research.
 
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| Red "Can't reach the backend" banner, or `Internal Server Error` / `502` on every action | The UI (Vite, :5173) is up but the API (:8000) isn't. Run `./start.sh` (it starts both), or start the API yourself: `cd backend && .venv/bin/uvicorn app.main:app --port 8000`. The page reconnects by itself once the API answers. |
+| `start.sh` says "Port 8000 is already in use" | Another process (often an old backend) holds the port. Stop it (`kill <PID>` from the message) or use `BACKEND_PORT=8001 ./start.sh`. |
+| `start.sh` says "The backend exited during startup" | It prints the last lines of `backend/data/backend.log` — usually a missing dependency (delete `backend/.venv` and re-run) or a bad value in `.env`. |
+| "Create account" says sign-ups are closed | The admin turned sign-ups off in the Keeper's Office → Access policy. The admin can reopen them or create the account. |
+| A run is `paused` | The owner ran out of tokens. The admin tops up the account; then press **Resume**. |
+| "No LLM provider configured" | Add at least one key (`GROQ_API_KEY` / `GEMINI_API_KEY`) to `backend/.env` and restart. |
+| A provider returns 404 for a model | Free models get retired; update the `MODEL_<ROLE>` chains in `backend/.env`. |
+
 ## Configuration (`backend/.env`)
 
 - `MODEL_<ROLE>` (planner, fast, writer, critic, analyst, judge): comma-separated fallback chain of `provider:model`.
@@ -126,6 +148,7 @@ backend/app/
   analysis.py      dataset profiling + LLM-written code execution
   db.py            SQLite: runs, events, chunks
 frontend/src/      React UI: Landing, App shell, Composer, RunView (terminal, evaluation, ask), Evals, Admin, Account
+docs/CODEBASE.md   what every file and function does
 docs/API.md        HTTP API reference
 ```
 
