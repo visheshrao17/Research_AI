@@ -81,7 +81,8 @@ You need: an AWS account, a domain on Cloudflare (free plan is fine), a Vercel a
 
 ### 4. GitHub secrets and variables
 
-Repo → **Settings → Secrets and variables → Actions**.
+Repo → **Settings → Secrets and variables → Actions**. **[ENVIRONMENT.md](ENVIRONMENT.md)** walks through each one,
+with where to find the value and `gh` commands to set them all from the terminal.
 
 **Secrets**
 

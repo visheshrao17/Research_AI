@@ -46,7 +46,8 @@ New to the code? See **[docs/CODEBASE.md](docs/CODEBASE.md)** (every file and fu
 
 Backend on **AWS EC2** (Docker Compose) behind a **Cloudflare Tunnel**, frontend on **Vercel**, deployed by GitHub
 Actions on every push to `main` (tests → image to GHCR → EC2 → health check through the tunnel → Vercel).
-Rollbacks are one click. Full setup: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+Rollbacks are one click. Full setup: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. The secrets and variables to add
+under *Settings → Secrets and variables → Actions*, and how to get each one: **[docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)**.
 
 Run the tests locally: `cd backend && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest -q tests`.
 
@@ -158,6 +159,7 @@ backend/app/
 frontend/src/      React UI: Landing, App shell, Composer, RunView (terminal, evaluation, ask), Evals, Admin, Account
 docs/CODEBASE.md   what every file and function does
 docs/DEPLOYMENT.md EC2 + Cloudflare Tunnel + Vercel + GitHub Actions setup
+docs/ENVIRONMENT.md every GitHub secret/variable and backend setting, with how to get each value
 deploy/            docker-compose.yml (EC2), ec2-setup.sh, render-vercel-json.sh
 backend/Dockerfile production API image;  backend/tests/  API tests (pytest)
 .github/workflows/ci-cd.yml  CI/CD pipeline
