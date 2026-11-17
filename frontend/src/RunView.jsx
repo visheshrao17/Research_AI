@@ -38,7 +38,17 @@ export default function RunView({ runId, me, toast, onDeleted, onChange, onToken
   useEffect(() => { load(); }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const es = api.events(runId, lastId.current);
+    let es = null;
+    let cancelled = false;
+    api.events(runId, lastId.current).then((source) => {
+      if (cancelled) { source.close(); return; }
+      es = source;
+      attach(es);
+    }).catch((e) => setError(e.message));
+    return () => { cancelled = true; es?.close(); };
+  }, [runId, streamKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function attach(es) {
     es.onmessage = (m) => {
       const ev = JSON.parse(m.data);
       if (ev.id <= lastId.current) return;
@@ -55,9 +65,10 @@ export default function RunView({ runId, me, toast, onDeleted, onChange, onToken
       }
     });
     es.addEventListener("end", () => { es.close(); setLive(null); scheduleRefresh(); });
-    es.onerror = () => es.close();
-    return () => es.close();
-  }, [runId, streamKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    // On a dropped connection EventSource reconnects by itself and sends Last-Event-ID, so nothing is lost.
+    // It only gives up (readyState CLOSED) on an HTTP error such as an expired token; refresh the run then.
+    es.onerror = () => { if (es.readyState === EventSource.CLOSED) scheduleRefresh(); };
+  }
 
   if (error) return <div className="pad error">{error}</div>;
   if (!run) return <Empty running text="Opening the vault…" />;

@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -36,6 +37,9 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="ResearchX", lifespan=lifespan)
 log = logging.getLogger("researchx.api")
+# Only the token-authenticated event stream is meant to be read cross-origin; cookies are never allowed cross-site.
+app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_credentials=False,
+                   allow_methods=["GET"], allow_headers=["Last-Event-ID", "Cache-Control"])
 
 
 @app.exception_handler(Exception)
@@ -47,7 +51,7 @@ async def unhandled_error(request: Request, exc: Exception):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "models": llm.available_models(),
+    return {"ok": True, "version": config.env("APP_VERSION", "dev"), "models": llm.available_models(),
             "search": "tavily" if config.TAVILY_API_KEY else "ddgs + wikipedia",
             "embeddings": config.EMBEDDING_MODEL if config.GEMINI_API_KEY else "local-hashed"}
 
@@ -324,9 +328,25 @@ async def ask_run(run_id: str, question: str = Body(..., embed=True), user: User
     return qa
 
 
-@app.get("/api/runs/{run_id}/events")
-async def stream_events(run_id: str, after: int = 0, user: User = Depends(current_user)):
+@app.get("/api/runs/{run_id}/stream-token")
+def get_stream_token(run_id: str, user: User = Depends(current_user)):
+    """Signed token for opening this run's event stream directly on the API host (see auth.stream_token)."""
     _owned_run(run_id, user)
+    return {"token": auth.stream_token(run_id, user.id)}
+
+
+@app.get("/api/runs/{run_id}/events")
+async def stream_events(run_id: str, request: Request, after: int = 0, st: str = ""):
+    # Same-origin browsers authenticate with the cookie; cross-origin (production) with ?st=<stream token>.
+    user = auth.user_from_stream_token(st, run_id) if st else current_user(request)
+    if user is None:
+        raise HTTPException(401, "Invalid or expired stream token")
+    _owned_run(run_id, user)
+    # EventSource reconnects send Last-Event-ID; resume from there instead of replaying the whole log.
+    try:
+        after = max(after, int(request.headers.get("last-event-id") or 0))
+    except ValueError:
+        pass
 
     async def gen():
         last, idle, live_v = after, 0, -1

@@ -1,3 +1,7 @@
+// In production the UI is on Vercel and /api is proxied to the backend, but the live event stream connects straight
+// to the API host (set at build time) using a signed per-run token, so it never depends on proxy streaming.
+const STREAM_BASE = (import.meta.env.VITE_API_STREAM_BASE || "").replace(/\/$/, "");
+
 async function req(path, opts = {}) {
   const init = { credentials: "same-origin", ...opts };
   if (opts.json !== undefined) {
@@ -49,7 +53,11 @@ export const api = {
   remove: (id) => req(`/api/runs/${id}`, { method: "DELETE" }),
   evaluate: (id) => req(`/api/runs/${id}/evaluate`, { method: "POST" }),
   ask: (id, question) => req(`/api/runs/${id}/ask`, { json: { question } }),
-  events: (id, after = 0) => new EventSource(`/api/runs/${id}/events?after=${after}`),
+  events: async (id, after = 0) => {
+    if (!STREAM_BASE) return new EventSource(`/api/runs/${id}/events?after=${after}`);
+    const { token } = await req(`/api/runs/${id}/stream-token`);
+    return new EventSource(`${STREAM_BASE}/api/runs/${id}/events?after=${after}&st=${encodeURIComponent(token)}`);
+  },
   // evaluations
   evals: (all = false) => req(`/api/evals${all ? "?all=true" : ""}`),
   // admin

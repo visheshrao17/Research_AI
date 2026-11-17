@@ -6,8 +6,15 @@ file you're changing. HTTP endpoints are listed in detail in [API.md](API.md).
 ```
 ResearchX/
 ├── start.sh                 one-command launcher (deps, backend, health wait, Vite)
+├── .github/workflows/ci-cd.yml  CI (tests, build) + CD (GHCR → EC2 → Vercel), see DEPLOYMENT.md
+├── deploy/
+│   ├── docker-compose.yml   production stack on EC2: api + cloudflared
+│   ├── ec2-setup.sh         one-time server bootstrap (Docker, swap, /opt/researchx)
+│   └── render-vercel-json.sh writes frontend/vercel.json (SPA + /api rewrite to the backend)
 ├── backend/
-│   ├── requirements.txt     Python dependencies
+│   ├── Dockerfile           production image (python 3.12-slim, non-root, 1 worker, healthcheck)
+│   ├── tests/               pytest API tests (conftest.py sets a temp DATA_DIR + test admin)
+│   ├── requirements.txt     Python dependencies (requirements-dev.txt adds pytest)
 │   ├── .env.example         configuration template (copy to .env)
 │   ├── data/                (created at runtime, git-ignored) SQLite DBs, uploads, charts, backend.log
 │   └── app/
@@ -55,7 +62,9 @@ ResearchX/
 Loads `backend/.env`, creates `data/`, `data/uploads/`, `data/outputs/`, and exposes settings as module constants:
 API keys, `ROLE_MODELS` (fallback chain per role: planner, fast, writer, critic, analyst, judge), `EMBEDDING_MODEL`,
 `MAX_REVISIONS`, `PASS_SCORE`, `SEARCH_RESULTS_PER_QUERY`, `MAX_SOURCES`, and auth settings
-(`ADMIN_USERNAME`, `ADMIN_PASSWORD`, `SESSION_DAYS`, `GUEST_HOURS`, `GUESTS_PER_IP_PER_DAY`, `COOKIE_SECURE`).
+(`ADMIN_USERNAME`, `ADMIN_PASSWORD`, `SESSION_DAYS`, `GUEST_HOURS`, `GUESTS_PER_IP_PER_DAY`, `COOKIE_SECURE`), and
+deployment settings: `DATA_DIR` (override the data folder), `TRUST_PROXY` (take the client IP from
+`X-Forwarded-For`), `CORS_ORIGINS` (who may open the live stream cross-origin), `SECRET_KEY` (signs stream tokens).
 
 | Function | What it does |
 |---|---|
@@ -110,7 +119,10 @@ Pool math: `available = token_pool − consumed (ledger total) − committed (un
 | `guests_today_from(ip)` | Guest passes created from an IP in the last 24h (abuse limit). |
 | `current_user(request)` | FastAPI dependency: the signed-in user, or 401. |
 | `admin_user(user)` | FastAPI dependency: the user if admin, or 403. |
-| `client_ip(request)` | Caller's IP. |
+| `client_ip(request)` | Caller's IP; behind trusted proxies (`TRUST_PROXY`) the first `X-Forwarded-For` / `CF-Connecting-IP`. |
+| `_secret()` | HMAC key: `SECRET_KEY`, or a random key generated once and stored in `settings`. |
+| `stream_token(run_id, user_id)` | `run:user:expiry:hmac` token (6h) that authorises one run's event stream without cookies. |
+| `user_from_stream_token(token, run_id)` | Verify signature, run id and expiry; return the user or `None`. |
 
 ### `meter.py`
 Who pays for a model call, and what the run is doing right now.
@@ -253,11 +265,14 @@ The FastAPI app. Endpoints are documented in [API.md](API.md); helpers:
 | `_set_session(response, user)` | Set the httpOnly session cookie. |
 | `_estimates()` | Average tokens per depth from finished runs (defaults until there is data). |
 | `_owned_run(run_id, user)` | Load a run the user owns (admins may open any), else 404. |
-| `stream_events` | SSE loop: new events, `live` snapshots when they change, keepalives, `end` when idle. |
+| `get_stream_token` | `GET /api/runs/{id}/stream-token`: signed token for opening the stream on the API host. |
+| `stream_events` | SSE loop: new events, `live` snapshots when they change, keepalives, `end` when idle. Accepts the cookie or `?st=<token>`, and resumes from `Last-Event-ID` after a reconnect. |
 | `eval_dashboard` | Aggregates per-run evaluations, averages and per-agent totals. |
 | Admin endpoints | Pool overview, users CRUD with allotments, policy settings, guest purge. |
 
-The built frontend (`frontend/dist`) is served at `/` when it exists, so one process can serve everything.
+`CORSMiddleware` allows cross-origin `GET` without credentials (for the token-authenticated stream); cookies never
+work cross-site. `/api/health` includes `version` (`APP_VERSION`, set to the commit SHA by the image build), which the
+deploy job checks. The built frontend (`frontend/dist`) is served at `/` when it exists, so one process can serve everything.
 
 ---
 
@@ -269,6 +284,7 @@ Mounts `<App/>` and loads `styles.css`.
 ### `api.js`
 | Export | What it does |
 |---|---|
+| `STREAM_BASE` | `VITE_API_STREAM_BASE` (build-time). When set, the event stream goes straight to the API host with a stream token. |
 | `req(path, opts)` | `fetch` wrapper: JSON bodies, readable errors (network failure → "Backend not reachable"), dispatches `rx:unauthorized` on 401. |
 | `api.*` | One method per endpoint: auth (`login`, `signup`, `guest`, `me`, `upgrade`, …), runs (`create`, `resume`, `evaluate`, `ask`, `events` → `EventSource`), `evals`, admin (`overview`, `users`, `updateUser`, `saveSettings`, …). |
 
@@ -292,7 +308,7 @@ enforced), revisions, token estimate vs balance, example questions.
 ### `RunView.jsx`
 | Function | What it does |
 |---|---|
-| `RunView` | Loads a run, subscribes to its SSE stream (events + `live`), header actions (stop, resume, download, delete), tabs. |
+| `RunView` | Loads a run, subscribes to its SSE stream (events + `live`; `attach` wires the handlers; the browser reconnects automatically), header actions (stop, resume, download, delete), tabs. |
 | `Pipeline` | Stage pills showing done / current / paused / skipped. |
 | `useNow`, `dur` | Ticking clock and duration formatting for the live panel. |
 | `Terminal` | The live terminal: current stage/agent/action/detail with timers, streamed model output, tokens this run / left, and the scrolling log (toggle model-call lines). |

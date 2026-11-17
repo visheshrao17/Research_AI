@@ -42,6 +42,14 @@ the very first start takes 30–60 s while Python compiles LangChain. Ports are 
 New to the code? See **[docs/CODEBASE.md](docs/CODEBASE.md)** (every file and function) and
 **[docs/API.md](docs/API.md)** (every endpoint).
 
+## Deployment
+
+Backend on **AWS EC2** (Docker Compose) behind a **Cloudflare Tunnel**, frontend on **Vercel**, deployed by GitHub
+Actions on every push to `main` (tests → image to GHCR → EC2 → health check through the tunnel → Vercel).
+Rollbacks are one click. Full setup: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+
+Run the tests locally: `cd backend && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest -q tests`.
+
 Free keys: **Groq** → https://console.groq.com/keys · **Gemini** → https://aistudio.google.com/apikey ·
 (optional) **OpenRouter** → https://openrouter.ai/keys · (optional) **Tavily** search → https://tavily.com
 
@@ -149,6 +157,10 @@ backend/app/
   db.py            SQLite: runs, events, chunks
 frontend/src/      React UI: Landing, App shell, Composer, RunView (terminal, evaluation, ask), Evals, Admin, Account
 docs/CODEBASE.md   what every file and function does
+docs/DEPLOYMENT.md EC2 + Cloudflare Tunnel + Vercel + GitHub Actions setup
+deploy/            docker-compose.yml (EC2), ec2-setup.sh, render-vercel-json.sh
+backend/Dockerfile production API image;  backend/tests/  API tests (pytest)
+.github/workflows/ci-cd.yml  CI/CD pipeline
 docs/API.md        HTTP API reference
 ```
 

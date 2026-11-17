@@ -6,16 +6,19 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
-DATA_DIR = BASE_DIR / "data"
+
+
+def env(name: str, default: str = "") -> str:
+    return os.getenv(name, default).strip()
+
+
+# DATA_DIR holds the SQLite databases, uploads and charts (a Docker volume in production).
+DATA_DIR = Path(env("DATA_DIR") or BASE_DIR / "data")
 UPLOAD_DIR = DATA_DIR / "uploads"
 OUTPUT_DIR = DATA_DIR / "outputs"
 DB_PATH = DATA_DIR / "researchx.db"
 for d in (DATA_DIR, UPLOAD_DIR, OUTPUT_DIR):
     d.mkdir(parents=True, exist_ok=True)
-
-
-def env(name: str, default: str = "") -> str:
-    return os.getenv(name, default).strip()
 
 
 GROQ_API_KEY = env("GROQ_API_KEY")
@@ -47,3 +50,12 @@ SESSION_DAYS = int(env("SESSION_DAYS", "14"))
 GUEST_HOURS = int(env("GUEST_HOURS", "24"))
 GUESTS_PER_IP_PER_DAY = int(env("GUESTS_PER_IP_PER_DAY", "5"))
 COOKIE_SECURE = env("COOKIE_SECURE", "false").lower() == "true"
+
+# Deployment. Behind Vercel + Cloudflare Tunnel the socket peer is the tunnel, so the real client IP comes from
+# X-Forwarded-For (Vercel overwrites it with the caller's address). Only enable this behind trusted proxies.
+TRUST_PROXY = env("TRUST_PROXY", "false").lower() == "true"
+# Origins allowed to open the live event stream directly (comma-separated, or * ). The stream is authenticated by
+# a signed per-run token, not cookies, so this does not expose any other endpoint.
+CORS_ORIGINS = [o.strip() for o in env("CORS_ORIGINS", "*").split(",") if o.strip()]
+# Signs stream tokens. If unset, a random key is generated once and stored in the database.
+SECRET_KEY = env("SECRET_KEY")

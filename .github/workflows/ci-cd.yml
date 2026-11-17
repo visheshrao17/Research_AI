@@ -1,0 +1,218 @@
+# CI on every push / PR; CD on main:
+#   test backend + build frontend → build & push API image (GHCR) → deploy to EC2 (Docker Compose + Cloudflare
+#   Tunnel) → verify through the tunnel → deploy frontend to Vercel.
+# Rollback: Actions → CI/CD → Run workflow → image_tag = an older commit SHA (skips the build, redeploys that image).
+# Setup (secrets, variables, one-time server and Vercel steps): docs/DEPLOYMENT.md
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Redeploy an existing image tag (commit SHA) instead of building — for rollbacks"
+        required: false
+        default: ""
+      deploy_frontend:
+        description: "Also deploy the frontend to Vercel"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  backend-test:
+    name: Backend tests
+    if: ${{ inputs.image_tag == '' || inputs.image_tag == null }}
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: backend } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: python -m compileall -q app
+      - run: python -m pytest -q tests
+
+  frontend-build:
+    name: Frontend build
+    if: ${{ inputs.image_tag == '' || inputs.image_tag == null }}
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: frontend } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  image:
+    name: Build & push API image
+    needs: [backend-test, frontend-build]
+    if: ${{ github.event_name != 'pull_request' && (inputs.image_tag == '' || inputs.image_tag == null) && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}-api" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+        if: ${{ vars.EC2_PLATFORM == 'linux/arm64' }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: backend
+          platforms: ${{ vars.EC2_PLATFORM || 'linux/amd64' }}
+          push: true
+          build-args: APP_VERSION=${{ github.sha }}
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ github.sha }}
+            ${{ steps.name.outputs.image }}:latest
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-backend:
+    name: Deploy API to EC2
+    needs: [image]
+    if: ${{ !cancelled() && !failure() && github.event_name != 'pull_request' && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.BACKEND_PUBLIC_URL }}
+    permissions:
+      contents: read
+      packages: read
+    concurrency: { group: deploy-backend, cancel-in-progress: false }
+    env:
+      APP_DIR: /opt/researchx
+      TAG: ${{ inputs.image_tag || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve image
+        run: echo "API_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}-api:${TAG}" >> "$GITHUB_ENV"
+
+      - name: Check required secrets
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          TUNNEL_TOKEN: ${{ secrets.TUNNEL_TOKEN }}
+        run: |
+          missing=""
+          for v in EC2_HOST EC2_USER EC2_SSH_KEY TUNNEL_TOKEN; do [ -n "${!v}" ] || missing="$missing $v"; done
+          [ -z "$missing" ] || { echo "::error::Missing repository secrets:$missing (see docs/DEPLOYMENT.md)"; exit 1; }
+
+      - name: Configure SSH
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          # Prefer a pinned host key (secret EC2_KNOWN_HOSTS); otherwise trust on first use.
+          if [ -n "$EC2_KNOWN_HOSTS" ]; then printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else ssh-keyscan -T 15 -H "$EC2_HOST" > ~/.ssh/known_hosts 2>/dev/null; fi
+          echo "SSH=ssh -i $HOME/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=20 ${{ secrets.EC2_USER }}@$EC2_HOST" >> "$GITHUB_ENV"
+
+      - name: Upload compose file and configuration
+        env:
+          TUNNEL_TOKEN: ${{ secrets.TUNNEL_TOKEN }}
+          BACKEND_ENV: ${{ secrets.BACKEND_ENV }}
+        run: |
+          $SSH "mkdir -p $APP_DIR && cat > $APP_DIR/docker-compose.yml" < deploy/docker-compose.yml
+          printf 'API_IMAGE=%s\nTUNNEL_TOKEN=%s\n' "$API_IMAGE" "$TUNNEL_TOKEN" \
+            | $SSH "umask 077 && cat > $APP_DIR/deploy.env"
+          if [ -n "$BACKEND_ENV" ]; then
+            # The BACKEND_ENV secret is the source of truth for API keys and app settings.
+            printf '%s\n' "$BACKEND_ENV" | $SSH "umask 077 && cat > $APP_DIR/backend.env"
+          else
+            $SSH "test -f $APP_DIR/backend.env" || { echo "::error::No BACKEND_ENV secret and no $APP_DIR/backend.env on the server"; exit 1; }
+            echo "::notice::BACKEND_ENV secret not set — keeping the existing backend.env on the server"
+          fi
+
+      - name: Pull and restart
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | $SSH "docker login ghcr.io -u ${{ github.actor }} --password-stdin >/dev/null"
+          $SSH "cd $APP_DIR && docker compose --env-file deploy.env pull --quiet && docker compose --env-file deploy.env up -d --remove-orphans"
+          $SSH "docker logout ghcr.io >/dev/null; docker image prune -af --filter 'until=168h' >/dev/null || true"
+
+      - name: Wait for the API on the server
+        run: |
+          for i in $(seq 1 60); do
+            v=$($SSH "curl -fs http://127.0.0.1:8000/api/health" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || true)
+            if [ "$v" = "$TAG" ]; then echo "API is up, version $v"; exit 0; fi
+            sleep 3
+          done
+          echo "::error::API did not become healthy with version $TAG"; $SSH "cd $APP_DIR && docker compose --env-file deploy.env ps && docker compose --env-file deploy.env logs --tail 80 api"; exit 1
+
+      - name: Verify through Cloudflare Tunnel
+        if: ${{ vars.BACKEND_PUBLIC_URL != '' }}
+        run: |
+          url="${{ vars.BACKEND_PUBLIC_URL }}"; url="${url%/}/api/health"
+          for i in $(seq 1 30); do
+            v=$(curl -fs "$url" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || true)
+            if [ "$v" = "$TAG" ]; then echo "Public endpoint serves $v"; exit 0; fi
+            sleep 4
+          done
+          echo "::error::$url did not return version $TAG — check the tunnel's public hostname"; $SSH "cd $APP_DIR && docker compose --env-file deploy.env logs --tail 40 cloudflared"; exit 1
+
+  deploy-frontend:
+    name: Deploy frontend to Vercel
+    needs: [deploy-backend]
+    if: ${{ !cancelled() && needs.deploy-backend.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.deploy_frontend) }}
+    runs-on: ubuntu-latest
+    environment:
+      name: production-frontend
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      BACKEND_PUBLIC_URL: ${{ vars.BACKEND_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Check configuration
+        run: |
+          missing=""
+          for v in VERCEL_ORG_ID VERCEL_PROJECT_ID VERCEL_TOKEN BACKEND_PUBLIC_URL; do [ -n "${!v}" ] || missing="$missing $v"; done
+          [ -z "$missing" ] || { echo "::error::Missing:$missing (secrets VERCEL_*, variable BACKEND_PUBLIC_URL — see docs/DEPLOYMENT.md)"; exit 1; }
+      - run: npm install -g vercel@${{ vars.VERCEL_CLI_VERSION || 'latest' }}
+      - name: Proxy /api to the backend
+        run: deploy/render-vercel-json.sh "$BACKEND_PUBLIC_URL"
+      - name: Build
+        run: |
+          # Vite reads .env.production.local at build time: the live stream connects straight to the API host.
+          echo "VITE_API_STREAM_BASE=${BACKEND_PUBLIC_URL%/}" > frontend/.env.production.local
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+      - name: Deploy
+        run: |
+          url=$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "Deployed: $url" | tee -a "$GITHUB_STEP_SUMMARY"

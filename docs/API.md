@@ -31,7 +31,8 @@ login, signup and guest endpoints. Errors are JSON `{"detail": "..."}` with a me
 | DELETE | `/runs/{id}` | Delete run, events and chunks (token ledger rows are kept) |
 | POST | `/runs/{id}/evaluate` | (Re-)evaluate a finished run |
 | POST | `/runs/{id}/ask` | `{question}` → cited answer from the run's indexed sources |
-| GET | `/runs/{id}/events?after=N` | Server-sent events, see below |
+| GET | `/runs/{id}/stream-token` | `{token}` to open the event stream on another origin (valid 6h, one run) |
+| GET | `/runs/{id}/events?after=N[&st=token]` | Server-sent events, see below. Auth: session cookie, or `st` |
 | GET | `/runs/{id}/files/{name}` | Charts produced by the analyst |
 
 ### Event stream
@@ -44,6 +45,10 @@ login, signup and guest endpoints. Errors are JSON `{"detail": "..."}` with a me
 - `event: live`: the current activity snapshot `{node, stage, agent, action, detail, model, stream,
   stream_chars, waiting, run_tokens, tokens_left, stage_started, action_started}`; sent whenever it changes.
 - `event: end`: the run is no longer active.
+
+Each event carries an SSE `id`, so a reconnecting `EventSource` sends `Last-Event-ID` and the stream resumes after it.
+In production the frontend opens the stream directly on the API host:
+`GET https://api.<domain>/api/runs/{id}/events?st=<token>` (CORS-enabled, no cookies).
 
 ## Evaluations
 

@@ -1,0 +1,39 @@
+# Production stack on the EC2 host (copied to /opt/researchx by the deploy workflow).
+#   API_IMAGE and TUNNEL_TOKEN come from /opt/researchx/deploy.env (compose --env-file),
+#   application settings and API keys from /opt/researchx/backend.env.
+# Nothing is exposed publicly: cloudflared dials out to Cloudflare, and the API port is bound to
+# localhost only (for health checks from the host).
+name: researchx
+
+services:
+  api:
+    image: ${API_IMAGE:?set API_IMAGE in deploy.env}
+    restart: unless-stopped
+    env_file: backend.env
+    environment:
+      DATA_DIR: /data
+      COOKIE_SECURE: "true"
+      TRUST_PROXY: "true"
+    volumes:
+      - researchx-data:/data
+    ports:
+      - "127.0.0.1:8000:8000"
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  cloudflared:
+    image: cloudflare/cloudflared:${CLOUDFLARED_VERSION:-latest}
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in deploy.env}
+    depends_on:
+      api:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  researchx-data:

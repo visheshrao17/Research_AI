@@ -259,4 +259,43 @@ def admin_user(user: User = Depends(current_user)) -> User:
 
 
 def client_ip(request: Request) -> str:
+    if config.TRUST_PROXY:
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        if forwarded:
+            return forwarded
+        if request.headers.get("cf-connecting-ip"):
+            return request.headers["cf-connecting-ip"]
     return request.client.host if request.client else "unknown"
+
+
+# ---------------- signed stream tokens ----------------
+# The browser opens the live event stream (SSE) straight to the API host in production, where the session cookie
+# (scoped to the frontend's domain) isn't sent. A short-lived HMAC token, fetched through the same-origin proxy,
+# authorises that one stream.
+STREAM_TOKEN_TTL = 6 * 3600
+
+
+def _secret() -> bytes:
+    key = config.SECRET_KEY or db.get_setting("_secret_key")
+    if not key:
+        key = secrets.token_hex(32)
+        db.set_setting("_secret_key", key)
+    return key.encode()
+
+
+def stream_token(run_id: str, user_id: str) -> str:
+    payload = f"{run_id}:{user_id}:{int(time.time()) + STREAM_TOKEN_TTL}"
+    sig = hmac.new(_secret(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}:{sig}"
+
+
+def user_from_stream_token(token: str, run_id: str) -> User | None:
+    try:
+        rid, uid, exp, sig = token.split(":")
+    except ValueError:
+        return None
+    expected = hmac.new(_secret(), f"{rid}:{uid}:{exp}".encode(), hashlib.sha256).hexdigest()
+    if rid != run_id or int(exp) < time.time() or not hmac.compare_digest(sig, expected):
+        return None
+    user = get_user(uid)
+    return user if user and not user.disabled else None
