@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Redeploy an existing image tag (commit SHA) instead of building — for rollbacks"
+        description: "Redeploy an existing commit SHA instead of building — for rollbacks (7-40 hex characters)"
         required: false
         default: ""
       deploy_frontend:
@@ -112,7 +112,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Resolve image
-        run: echo "API_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}-api:${TAG}" >> "$GITHUB_ENV"
+        run: |
+          if [[ ! "$TAG" =~ ^[0-9A-Fa-f]{7,40}$ ]]; then
+            echo "::error::image_tag must be a 7-40 character commit SHA (hex), not '${TAG}'"
+            exit 1
+          fi
+          echo "API_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}-api:${TAG}" >> "$GITHUB_ENV"
 
       - name: Check required secrets
         env:
