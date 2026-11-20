@@ -25,9 +25,7 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:${CLOUDFLARED_VERSION:-latest}
     restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in deploy.env}
+    command: tunnel --no-autoupdate --url http://api:8000
     depends_on:
       api:
         condition: service_healthy
