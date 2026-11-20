@@ -187,37 +187,4 @@ jobs:
           done
           echo "::error::$url did not return version $TAG — check the tunnel's public hostname"; $SSH "cd $APP_DIR && docker compose --env-file deploy.env logs --tail 40 cloudflared"; exit 1
 
-  deploy-frontend:
-    name: Deploy frontend to Vercel
-    needs: [deploy-backend]
-    if: ${{ !cancelled() && needs.deploy-backend.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.deploy_frontend) }}
-    runs-on: ubuntu-latest
-    environment:
-      name: production
-    env:
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      BACKEND_PUBLIC_URL: ${{ vars.BACKEND_PUBLIC_URL }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-      - name: Check configuration
-        run: |
-          missing=""
-          for v in VERCEL_ORG_ID VERCEL_PROJECT_ID VERCEL_TOKEN BACKEND_PUBLIC_URL; do [ -n "${!v}" ] || missing="$missing $v"; done
-          [ -z "$missing" ] || { echo "::error::Missing:$missing (secrets VERCEL_*, variable BACKEND_PUBLIC_URL — see docs/DEPLOYMENT.md)"; exit 1; }
-      - run: npm install -g vercel@${{ vars.VERCEL_CLI_VERSION || 'latest' }}
-      - name: Proxy /api to the backend
-        run: deploy/render-vercel-json.sh "$BACKEND_PUBLIC_URL"
-      - name: Build
-        run: |
-          # Vite reads .env.production.local at build time: the live stream connects straight to the API host.
-          echo "VITE_API_STREAM_BASE=${BACKEND_PUBLIC_URL%/}" > frontend/.env.production.local
-          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
-          vercel build --prod --token="$VERCEL_TOKEN"
-      - name: Deploy
-        run: |
-          url=$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
-          echo "Deployed: $url" | tee -a "$GITHUB_STEP_SUMMARY"
+  
