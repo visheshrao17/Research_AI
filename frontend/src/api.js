@@ -1,9 +1,14 @@
-// In production the UI is on Vercel and /api is proxied to the backend, but the live event stream connects straight
-// to the API host (set at build time) using a signed per-run token, so it never depends on proxy streaming.
-const STREAM_BASE = (import.meta.env.VITE_API_STREAM_BASE || "").replace(/\/$/, "");
+// In production the UI is on Vercel and all /api requests go directly to the backend host (VITE_API_URL).
+// In local dev the Vite proxy forwards /api to the local backend, so API_BASE stays empty.
+const API_BASE = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+
+// The live event stream connects straight to the API host using a signed per-run token.
+// Falls back to API_BASE if VITE_API_STREAM_BASE is not set separately.
+const STREAM_BASE = (import.meta.env.VITE_API_STREAM_BASE || import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 
 async function req(path, opts = {}) {
-  const init = { credentials: "same-origin", ...opts };
+  const url = API_BASE ? `${API_BASE}${path}` : path;
+  const init = { credentials: API_BASE ? "include" : "same-origin", ...opts };
   if (opts.json !== undefined) {
     init.method = opts.method || "POST";
     init.headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
@@ -12,7 +17,7 @@ async function req(path, opts = {}) {
   }
   let res;
   try {
-    res = await fetch(path, init);
+    res = await fetch(url, init);
   } catch {
     const err = new Error("Backend not reachable — is the server running?");
     err.status = 0;
@@ -54,9 +59,12 @@ export const api = {
   evaluate: (id) => req(`/api/runs/${id}/evaluate`, { method: "POST" }),
   ask: (id, question) => req(`/api/runs/${id}/ask`, { json: { question } }),
   events: async (id, after = 0) => {
-    if (!STREAM_BASE) return new EventSource(`/api/runs/${id}/events?after=${after}`);
-    const { token } = await req(`/api/runs/${id}/stream-token`);
-    return new EventSource(`${STREAM_BASE}/api/runs/${id}/events?after=${after}&st=${encodeURIComponent(token)}`);
+    if (STREAM_BASE) {
+      const { token } = await req(`/api/runs/${id}/stream-token`);
+      return new EventSource(`${STREAM_BASE}/api/runs/${id}/events?after=${after}&st=${encodeURIComponent(token)}`);
+    }
+    // Local dev: use the Vite proxy
+    return new EventSource(`/api/runs/${id}/events?after=${after}`);
   },
   // evaluations
   evals: (all = false) => req(`/api/evals${all ? "?all=true" : ""}`),

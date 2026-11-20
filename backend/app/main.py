@@ -37,9 +37,22 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="ResearchX", lifespan=lifespan)
 log = logging.getLogger("researchx.api")
-# Only the token-authenticated event stream is meant to be read cross-origin; cookies are never allowed cross-site.
-app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_credentials=False,
-                   allow_methods=["GET"], allow_headers=["Last-Event-ID", "Cache-Control"])
+
+# --- CORS ---
+# CORS_ORIGINS  : comma-separated list of trusted front-end origins, e.g. "https://my-app.vercel.app"
+#                 Set in backend/.env.  "*" (the default) is fine for public APIs but blocks credentialed requests.
+# CORS_API_ORIGINS: same list but used for the full API surface (all methods).  Defaults to CORS_ORIGINS.
+_api_origins = [o.strip() for o in config.env("CORS_API_ORIGINS", ",".join(config.CORS_ORIGINS)).split(",") if o.strip()]
+
+# Full CORS for all /api endpoints: allow the Vercel frontend to call the EC2 backend with credentials (cookies).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_api_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Last-Event-ID", "Cache-Control"],
+    expose_headers=["Content-Type"],
+)
 
 
 @app.exception_handler(Exception)
@@ -62,8 +75,17 @@ _failed_logins: dict[str, list[float]] = defaultdict(list)
 
 def _set_session(response: Response, user: User) -> None:
     token, expires = auth.new_session(user)
-    response.set_cookie(auth.COOKIE, token, max_age=int(expires - time.time()), httponly=True,
-                        samesite="lax", secure=config.COOKIE_SECURE, path="/")
+    # Cross-origin deployments (Vercel frontend → EC2 backend) require SameSite=None + Secure.
+    # When COOKIE_SECURE is false (local dev over http) we fall back to SameSite=Lax so the cookie still works.
+    cross_origin = config.COOKIE_SECURE  # True in production (HTTPS), False in local dev
+    response.set_cookie(
+        auth.COOKIE, token,
+        max_age=int(expires - time.time()),
+        httponly=True,
+        samesite="none" if cross_origin else "lax",
+        secure=cross_origin,
+        path="/",
+    )
 
 
 @app.get("/api/auth/config")
